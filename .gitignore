@@ -1,0 +1,9 @@
+# Build output
+rust/target/
+
+# Large model weights
+models/
+*.gguf
+
+# Vendored upstream checkout
+llama.cpp/
