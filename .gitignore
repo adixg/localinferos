@@ -1,6 +1,7 @@
 # Build output
 /target/
 /build/
+/dist/
 
 # Large model weights
 models/

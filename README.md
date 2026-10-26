@@ -2,6 +2,8 @@
 
 A minimal Ratatui TUI for chatting with local GGUF models through llama.cpp's router, with switching between models. No persistent database, browser UI, or Python runtime.
 
+Busybox base OS that you can boot into using a usb stick. Currently meant for 16GB USB sticks.
+
 ## Repo structure
 
 ```
@@ -61,6 +63,7 @@ The TUI automatically queries `/v1/models` on startup and chooses the first disc
 
 Commands typed into the chat input:
 
+- `/profile` — benchmark this machine and estimate tok/s for each catalog model (runs automatically on first start; saved to `/data/config/profile.json`)
 - `/models` — refresh and list discovered models
 - `/use 1` — choose model number 1, clears in-memory context if switching
 - `/use <exact-model-id>` — alternatively choose using the model id
