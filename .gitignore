@@ -1,5 +1,6 @@
 # Build output
 /target/
+/build/
 
 # Large model weights
 models/
