@@ -23,14 +23,12 @@ rm -rf "$WORK"
 mkdir -p "$ROOTFS" "$BOOTDIR/EFI/BOOT" "$BOOTDIR/boot" "$DATADIR" dist
 
 # Minimal filesystem
-mkdir -p "$ROOTFS"/{bin,sbin,usr/bin,usr/lib,lib,lib64}
-mkdir -p "$ROOTFS"/{dev,proc,sys,tmp,run,root,data,etc}
-mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/dev/shm"
+mkdir -p "$ROOTFS"/{bin,usr/bin,usr/lib,dev,proc,sys,tmp,root,data,etc}
 
 # BusyBox: shell + core utilities
 cp /bin/busybox "$ROOTFS/bin/busybox"
 
-for cmd in sh mount mkdir ip clear wget sleep setsid df modprobe findfs udhcpc; do
+for cmd in sh mount mkdir ip clear sleep df modprobe findfs udhcpc umount sync poweroff; do
     ln -s busybox "$ROOTFS/bin/$cmd"
 done
 
@@ -72,9 +70,10 @@ copy_libs() {
 copy_libs "$UI_BIN"
 copy_libs build/llama-cpu/bin/llama-server
 
-# PID 1 startup script
+# PID 1 startup script, and the banner it shows while booting
 cp iso/init "$ROOTFS/init"
 chmod +x "$ROOTFS/init"
+cp iso/banner.txt "$ROOTFS/etc/banner"
 
 # Kernel requires an initial console
 sudo mknod -m 600 "$ROOTFS/dev/console" c 5 1
@@ -122,22 +121,44 @@ KVER="${KERNEL_PKG#linux-image-}"
 KDIR="$WORK/kernel"
 mkdir -p "$KDIR"
 
-(
-    cd "$KDIR"
-    apt download "$KERNEL_PKG" "linux-modules-$KVER"
-    dpkg-deb -x "$(ls ${KERNEL_PKG}_*.deb)" extracted
-    dpkg-deb -x "$(ls linux-modules-${KVER}_*.deb)" modules
-)
+# Packages are cached in build/debs, so rebuilds don't download them again.
+# linux-modules-extra has most network drivers; linux-firmware-realtek has
+# the firmware some Realtek network chips need.
+DEBS="$ROOT/build/debs"
+mkdir -p "$DEBS"
+
+for pkg in "$KERNEL_PKG" "linux-modules-$KVER" "linux-modules-extra-$KVER" linux-firmware-realtek; do
+    ls "$DEBS/${pkg}_"*.deb >/dev/null 2>&1 || (cd "$DEBS" && apt download "$pkg")
+done
+
+dpkg-deb -x "$(ls "$DEBS/${KERNEL_PKG}_"*.deb)" "$KDIR/extracted"
+dpkg-deb -x "$(ls "$DEBS/linux-modules-${KVER}_"*.deb)" "$KDIR/modules"
+dpkg-deb -x "$(ls "$DEBS/linux-modules-extra-${KVER}_"*.deb)" "$KDIR/modules"
+dpkg-deb -x "$(ls "$DEBS/linux-firmware-realtek_"*.deb)" "$KDIR/firmware"
 
 cp "$KDIR"/extracted/boot/vmlinuz-* "$BOOTDIR/boot/vmlinuz"
+
+# Realtek network firmware. The kernel loads it from /lib/firmware itself
+# (compressed .zst is fine).
+mkdir -p "$ROOTFS/lib/firmware"
+cp -r "$KDIR/firmware/lib/firmware/rtl_nic" "$ROOTFS/lib/firmware/"
 
 # Drivers loaded by init. modprobe resolves their dependencies (e.g. uas
 # needs usb-storage), so list only what init asks for.
 #   xhci-pci  USB 3 controllers (USB 2 drivers are built into the kernel)
 #   uas       USB sticks (with usb-storage)
 #   ahci      SATA, for VMs
-#   e1000     Intel network card, as emulated by QEMU and VirtualBox
-MODULES="xhci-pci uas ahci e1000"
+MODULES="xhci-pci uas ahci"
+
+# Wired network drivers, also loaded by init (keep in sync with iso/init):
+#   e1000                 Intel, as emulated by QEMU and VirtualBox
+#   e1000e, igc           Intel 1G and 2.5G
+#   r8169                 Realtek 1G/2.5G, the most common laptop chip
+#   r8152, ax88179_178a   USB Ethernet adapters and docks (Realtek, ASIX)
+#   cdc_ether, cdc_ncm    standard USB network devices, Android USB tethering
+#   rndis_host            older Android USB tethering
+NET_MODULES="e1000 e1000e igc r8169 r8152 ax88179_178a cdc_ether cdc_ncm rndis_host"
+MODULES="$MODULES $NET_MODULES"
 
 depmod -b "$KDIR/modules" "$KVER"
 MODDIR="$ROOTFS/lib/modules/$KVER"

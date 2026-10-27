@@ -1,16 +1,17 @@
 #!/bin/sh
 
-export PATH=/bin:/usr/bin:/sbin
+export PATH=/bin:/usr/bin
 export HOME=/root
 export TERM=linux
 
 # 1. Essential kernel filesystems
 mount -t devtmpfs devtmpfs /dev
-mkdir -p /dev/pts /dev/shm
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /tmp
+
+clear
+cat /etc/banner
 
 # 2. Storage drivers (uas loads usb-storage itself)
 modprobe xhci-pci
@@ -34,12 +35,24 @@ if ! mount -t ext4 "$DATA" /data; then
     echo "ERROR: could not mount $DATA"
     exec /bin/sh
 fi
-mkdir -p /data/models /data/config /data/hf-cache
 
-# 4. Network, for model downloads. Everything else works without it.
-modprobe e1000
+# 4. Wired network, for model downloads. Everything else works without it.
+# A driver for hardware that isn't there does nothing, so load them all
+# (keep in sync with NET_MODULES in iso/build.sh).
+for mod in e1000 e1000e igc r8169 r8152 ax88179_178a cdc_ether cdc_ncm rndis_host; do
+    modprobe "$mod" 2>/dev/null
+done
+sleep 2 # let USB adapters and phones show up
 ip link set lo up
-ip link set eth0 up 2>/dev/null && udhcpc -i eth0 -s /etc/udhcpc.script -n -q
+
+# DHCP on every interface (eth* for cards, usb* for phones). -b keeps
+# trying in the background, so a cable plugged in later still connects.
+for path in /sys/class/net/*; do
+    iface=${path##*/}
+    [ "$iface" = lo ] && continue
+    ip link set "$iface" up
+    udhcpc -i "$iface" -s /etc/udhcpc.script -b -q -t 3 -T 2
+done
 
 # 5. Rust TUI. It starts llama-server itself; these are for the server.
 export LLAMA_CACHE=/data/hf-cache
@@ -47,9 +60,18 @@ export LLAMA_CACHE=/data/hf-cache
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 clear
-# init is PID 1 and must never exit, so restart the TUI if it quits
+# init is PID 1 and must never exit, so restart the TUI if it quits.
+# Exit code 10 (Ctrl+Q) means shut down.
 while true; do
     /usr/bin/localinferos < /dev/tty1 > /dev/tty1 2>&1
+    if [ $? -eq 10 ]; then
+        echo "Shutting down..."
+        sleep 1 # let llama-server's model processes exit
+        sync
+        # Unmount so ext4 is cleanly closed; read-only if something still has it open
+        umount /data 2>/dev/null || mount -o remount,ro /data
+        poweroff -f
+    fi
     echo "LocalInferOS exited. Press Enter to restart."
     read -r _
 done

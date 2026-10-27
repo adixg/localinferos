@@ -10,24 +10,25 @@ use std::{
     time::Duration,
 };
 
+use reqwest::blocking::{Client, RequestBuilder};
 use serde_json::{json, Value};
 
 use crate::WorkerEvent;
 
 const ROUTER_URL: &str = "http://127.0.0.1:8080";
 
-fn post(path: &str, body: Value) -> Result<(), String> {
-    let response = reqwest::blocking::Client::new()
-        .post(format!("{ROUTER_URL}{path}"))
-        .json(&body)
-        .send()
-        .map_err(|err| err.to_string())?;
+fn send(request: RequestBuilder) -> Result<(), String> {
+    let response = request.send().map_err(|err| err.to_string())?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().unwrap_or_default();
         return Err(format!("HTTP {status}: {text}"));
     }
     Ok(())
+}
+
+fn post(path: &str, body: Value) -> Result<(), String> {
+    send(Client::new().post(format!("{ROUTER_URL}{path}")).json(&body))
 }
 
 /// Starts a download, or resumes a cancelled one. Skips vision files
@@ -44,16 +45,7 @@ pub fn cancel(model: &str) -> Result<(), String> {
 /// Deletes a downloaded model's files. The router unloads it first if it's
 /// running, and stops listing it.
 pub fn remove(model: &str) -> Result<(), String> {
-    let response = reqwest::blocking::Client::new()
-        .delete(format!("{ROUTER_URL}/models?model={}", url_encode(model)))
-        .send()
-        .map_err(|err| err.to_string())?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
-        return Err(format!("HTTP {status}: {text}"));
-    }
-    Ok(())
+    send(Client::new().delete(format!("{ROUTER_URL}/models?model={}", url_encode(model))))
 }
 
 /// Percent-encodes everything but unreserved characters, e.g. the `/` and `:`
@@ -90,7 +82,7 @@ pub fn watch(tx: Sender<WorkerEvent>) {
 
 fn watch_once(tx: &Sender<WorkerEvent>) -> Result<(), Box<dyn Error>> {
     // The event stream stays open indefinitely, so no overall timeout.
-    let client = reqwest::blocking::Client::builder().timeout(None::<Duration>).build()?;
+    let client = Client::builder().timeout(None::<Duration>).build()?;
     let response = client.get(format!("{ROUTER_URL}/models/sse")).send()?.error_for_status()?;
 
     for line in BufReader::new(response).lines() {

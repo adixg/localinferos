@@ -9,6 +9,8 @@ use std::{fs, path::PathBuf, process::Command};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::storage;
+
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 pub struct CatalogModel {
@@ -61,6 +63,13 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// Whether this profile was measured on the machine we're running on. The
+    /// stick moves between computers, and another machine's numbers are wrong
+    /// here. RAM is compared in whole GiB because it varies slightly per boot.
+    pub fn is_for_this_machine(&self) -> bool {
+        self.cpu == cpu_name() && self.cpu_threads == cpu_threads() && gib(self.ram_bytes) == gib(ram_bytes())
+    }
+
     /// Within about ±15% of measured speeds for Qwen3 0.6B/4B/8B on an
     /// i7-13650HX. The 1.7B benchmark model uses bandwidth slightly better
     /// than other models, hence the 0.85 factor.
@@ -110,11 +119,13 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn profile_path() -> PathBuf {
-    PathBuf::from(env_or("LOCALINFEROS_DATA", "/data")).join("config/profile.json")
+    storage::data_dir().join("config/profile.json")
 }
 
+/// The saved profile, if it was measured on this machine.
 pub fn load() -> Option<Profile> {
-    serde_json::from_str(&fs::read_to_string(profile_path()).ok()?).ok()
+    let profile: Profile = serde_json::from_str(&fs::read_to_string(profile_path()).ok()?).ok()?;
+    profile.is_for_this_machine().then_some(profile)
 }
 
 pub fn save(profile: &Profile) -> std::io::Result<()> {
@@ -137,6 +148,14 @@ fn cpu_name() -> String {
         .unwrap_or_else(|| "unknown CPU".to_owned())
 }
 
+fn cpu_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+fn gib(bytes: u64) -> u64 {
+    (bytes as f64 / GIB).round() as u64
+}
+
 fn ram_bytes() -> u64 {
     fs::read_to_string("/proc/meminfo")
         .ok()
@@ -157,9 +176,6 @@ fn thread_candidates(threads: usize) -> Vec<usize> {
     list.retain(|&t| t >= 1 && t <= threads);
     list.sort_unstable();
     list.dedup();
-    if list.is_empty() {
-        list.push(1);
-    }
     list
 }
 
@@ -189,7 +205,7 @@ fn bench_once(bench: &str, model: &str, threads: usize) -> Result<(f64, f64), St
 pub fn run() -> Result<Profile, String> {
     let bench = env_or("LLAMA_BENCH", "llama-bench");
     let model = env_or("LOCALINFEROS_PROFILE_MODEL", "/data/models/default/Qwen3-1.7B-Q4_K_M.gguf");
-    let cpu_threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cpu_threads = cpu_threads();
 
     let (mut best_threads, mut tokens_per_sec, mut model_size) = (0, 0.0, 0.0);
     for threads in thread_candidates(cpu_threads) {

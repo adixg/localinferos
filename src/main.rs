@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self, Sender},
     thread,
     time::{Duration, Instant},
 };
@@ -15,17 +15,18 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     DefaultTerminal, Frame,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod download;
+mod history;
 mod profile;
 mod storage;
 
 const SERVER_URL: &str = "http://127.0.0.1:8080/v1/chat/completions";
 const MODELS_URL: &str = "http://127.0.0.1:8080/v1/models";
 
-// The model bundled on the ISO, at models/default/ (see iso/build.sh).
+// The model bundled on the stick, at /data/models/default/ (see iso/build.sh).
 const DEFAULT_MODEL: &str = "default";
 const DEFAULT_MODEL_FILE: &str = "Qwen3-1.7B-Q4_K_M";
 
@@ -37,12 +38,8 @@ fn display_name(model: &str) -> String {
     }
 }
 
-
-fn fetch_models() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let response: serde_json::Value =
-        reqwest::blocking::get(MODELS_URL)?
-            .error_for_status()?
-            .json()?;
+fn fetch_models() -> Result<Vec<String>, Box<dyn Error>> {
+    let response: Value = reqwest::blocking::get(MODELS_URL)?.error_for_status()?.json()?;
 
     let models = response["data"]
         .as_array()
@@ -56,8 +53,7 @@ fn fetch_models() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(models)
 }
 
-
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Message {
     role: String,
     content: String,
@@ -86,7 +82,6 @@ struct Download {
     ignore_failures: u32,
 }
 
-
 #[derive(Default)]
 struct App {
     input: String,
@@ -100,6 +95,8 @@ struct App {
     profiling: bool,
     profile: Option<profile::Profile>,
     download: Option<Download>,
+    /// Id of the conversation being saved to /data/history.
+    chat_id: u64,
 }
 
 impl App {
@@ -115,7 +112,33 @@ impl App {
             app.transcript.push_str(&p.report());
             app.transcript.push_str("[Saved profile. Run /profile to measure again.]\n");
         }
+        app.chat_id = history::new_id();
+        if let Some((id, chat)) = history::load_latest() {
+            app.restore_chat(id, chat);
+        }
         app
+    }
+
+    fn restore_chat(&mut self, id: u64, chat: history::Chat) {
+        if self.models.contains(&chat.model) {
+            self.selected_model = chat.model;
+        }
+        self.transcript.push_str("\n[Your last chat. /clear starts a new one]\n");
+        for message in &chat.messages {
+            match message.role.as_str() {
+                "user" => self.transcript.push_str(&format!("\nYOU: {}\n", message.content)),
+                _ => self.transcript.push_str(&format!("ASSISTANT: {}\n", message.content)),
+            }
+        }
+        self.messages = chat.messages;
+        self.chat_id = id;
+    }
+
+    /// Starts a new conversation; the previous one stays saved.
+    fn new_chat(&mut self) {
+        self.messages.clear();
+        self.response.clear();
+        self.chat_id = history::new_id();
     }
 
     fn start_profile(&mut self, tx: Sender<WorkerEvent>) {
@@ -166,8 +189,8 @@ impl App {
 
         let model = entry.id();
         match download::status(&model).as_deref() {
-            None | Some("incomplete") => {}
-            Some("downloading") => {} // e.g. started before the TUI restarted
+            // "downloading": e.g. started before the TUI restarted
+            None | Some("incomplete" | "downloading") => {}
             Some(_) => {
                 self.transcript.push_str(&format!("\n[{} is already downloaded]\n", entry.name));
                 self.list_models();
@@ -235,8 +258,7 @@ impl App {
         ));
         self.refresh_models();
         if self.selected_model == model {
-            self.messages.clear();
-            self.response.clear();
+            self.new_chat();
             self.selected_model = self.preferred_model();
             self.transcript.push_str(&format!("[Now using {}]\n", display_name(&self.selected_model)));
         }
@@ -354,8 +376,7 @@ impl App {
             return;
         };
         if model != self.selected_model {
-            self.messages.clear();
-            self.response.clear();
+            self.new_chat();
             self.selected_model = model;
         }
         self.transcript.push_str(&format!("\n[Using {}]\n", display_name(&self.selected_model)));
@@ -371,8 +392,7 @@ impl App {
             return;
         }
         if prompt == "/clear" {
-            self.messages.clear();
-            self.response.clear();
+            self.new_chat();
             self.transcript.clear();
             self.scroll_up = 0;
             return;
@@ -449,6 +469,13 @@ impl App {
                         role: "assistant".to_owned(),
                         content: std::mem::take(&mut self.response),
                     });
+                    let chat = history::Chat {
+                        model: self.selected_model.clone(),
+                        messages: self.messages.clone(),
+                    };
+                    if let Err(err) = history::save(self.chat_id, &chat) {
+                        self.transcript.push_str(&format!("\n[Could not save chat: {err}]"));
+                    }
                 } else {
                     self.transcript.push_str("[No response text returned]");
                 }
@@ -513,7 +540,6 @@ impl App {
     }
 }
 
-
 fn stream_chat(model: &str, messages: Vec<Message>, tx: &Sender<WorkerEvent>) -> Result<(), Box<dyn Error + Send + Sync>> {
     // No overall timeout: long replies, or loading a model on first use, can
     // take minutes. reqwest's blocking client otherwise stops at 30 seconds.
@@ -533,11 +559,11 @@ fn stream_chat(model: &str, messages: Vec<Message>, tx: &Sender<WorkerEvent>) ->
         }))
         .send()?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text()?;
-            return Err(format!("HTTP {status}: {body}").into());
-        }
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text()?;
+        return Err(format!("HTTP {status}: {body}").into());
+    }
 
     // OpenAI-compatible streaming responses use Server-Sent Events (SSE).
     for line in BufReader::new(response).lines() {
@@ -608,13 +634,14 @@ fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         "Ready".to_owned()
     };
-    let help = format!("{status}  |  Enter send  |  /help commands  |  ↑/↓ PgUp/PgDn scroll  |  Ctrl+Q quit");
+    let help = format!("{status}  |  Enter send  |  /help commands  |  ↑/↓ PgUp/PgDn scroll  |  Ctrl+Q shut down");
     frame.render_widget(Paragraph::new(help), sections[3]);
 }
 
-fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+/// Returns true if the user asked to shut down (Ctrl+Q).
+fn run(terminal: &mut DefaultTerminal) -> std::io::Result<bool> {
     let mut app = App::new();
-    let (tx, rx): (Sender<WorkerEvent>, Receiver<WorkerEvent>) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     if app.profile.is_none() {
         app.start_profile(tx.clone());
     }
@@ -633,8 +660,8 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
                     continue;
                 }
                 match (key.code, key.modifiers) {
-                    (KeyCode::Char('q'), m) if m.contains(KeyModifiers::CONTROL) => break,
-                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => break,
+                    (KeyCode::Char('q'), m) if m.contains(KeyModifiers::CONTROL) => return Ok(true),
+                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => return Ok(false),
                     (KeyCode::Enter, _) => app.submit(tx.clone()),
                     (KeyCode::Backspace, _) => { app.input.pop(); }
                     (KeyCode::PageUp, _) => {
@@ -656,8 +683,10 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             }
         }
     }
-    Ok(())
 }
+
+/// Exit code that tells iso/init to power off the machine.
+const EXIT_SHUTDOWN: i32 = 10;
 
 fn main() -> std::io::Result<()> {
     // `localinferos --profile` prints the hardware report without the TUI.
@@ -674,13 +703,16 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
     let mut server = start_server();
-    let result = ratatui::run(run);
+    let shutdown = ratatui::run(run)?;
     // Model processes started by the router exit when it does.
     if let Some(child) = server.as_mut() {
         let _ = child.kill();
         let _ = child.wait();
     }
-    result
+    if shutdown {
+        std::process::exit(EXIT_SHUTDOWN);
+    }
+    Ok(())
 }
 
 const HEALTH_URL: &str = "http://127.0.0.1:8080/health";

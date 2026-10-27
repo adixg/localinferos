@@ -11,6 +11,11 @@ use std::{
 
 use crate::profile::CatalogModel;
 
+/// The data partition: profile, chat history, models.
+pub fn data_dir() -> PathBuf {
+    PathBuf::from(std::env::var("LOCALINFEROS_DATA").unwrap_or_else(|_| "/data".to_owned()))
+}
+
 pub fn models_dir() -> PathBuf {
     PathBuf::from(std::env::var("LLAMA_CACHE").unwrap_or_else(|_| "/data/hf-cache".to_owned()))
 }

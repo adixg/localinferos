@@ -1,0 +1,7 @@
+
+ m      mmmmm   mmmm       (       LocalInferOS v0.1
+ #        #    m"  "m     ) )      Private AI, booted from a USB stick
+ #        #    #    #    ( ( (     llama.cpp - CPU - offline chat
+ #        #    #    #     ) ) )
+ #mmmmm mm#mm   #mm#      `---'    Starting up...
+
