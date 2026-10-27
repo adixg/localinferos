@@ -6,3 +6,6 @@
 # Large model weights
 models/
 *.gguf
+
+# Personal notes
+todo.md

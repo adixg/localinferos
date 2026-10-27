@@ -1,36 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Boot the ISO in QEMU with KVM. Creates the disk images on first run.
+# Boot the USB image in QEMU the way a PC would: UEFI firmware (OVMF), image
+# attached as a USB stick. Writes go to the image, like a real stick.
 # Override defaults with e.g.: RAM=8G CPUS=8 iso/run-qemu.sh
 
 cd "$(dirname "$0")/.."
 
-ISO=dist/LocalInferOS-v0.1.iso
-DUMMY=dist/dummy.img
-DATA=dist/data.img
+IMG=dist/LocalInferOS-v0.1.img
+OVMF=/usr/share/ovmf/OVMF.fd
 
-if [ ! -f "$ISO" ]; then
-    echo "ISO not found: run iso/build.sh first"
+if [ ! -f "$IMG" ]; then
+    echo "Image not found: run iso/build.sh first"
     exit 1
 fi
 
-# init mounts /dev/sdb, so a placeholder disk takes /dev/sda
-[ -f "$DUMMY" ] || truncate -s 64M "$DUMMY"
-
-# Persistent data disk: profile, downloaded models. Sparse, so it only
-# uses real space as it fills up.
-if [ ! -f "$DATA" ]; then
-    truncate -s "${DATA_SIZE:-16G}" "$DATA"
-    mkfs.ext4 -q -F "$DATA"
+if [ ! -f "$OVMF" ]; then
+    echo "UEFI firmware not found: sudo apt install ovmf"
+    exit 1
 fi
 
-# -cpu host: llama.cpp is built for this CPU's instruction set
+# -cpu host: llama.cpp needs AVX2, which QEMU's default CPU lacks
 exec qemu-system-x86_64 \
     -enable-kvm -cpu host \
     -smp "${CPUS:-4}" -m "${RAM:-4G}" \
-    -cdrom "$ISO" -boot d \
-    -device ahci,id=ahci \
-    -drive file="$DUMMY",if=none,id=d0,format=raw -device ide-hd,drive=d0,bus=ahci.0 \
-    -drive file="$DATA",if=none,id=d1,format=raw -device ide-hd,drive=d1,bus=ahci.1 \
+    -bios "$OVMF" \
+    -device qemu-xhci \
+    -drive if=none,id=stick,file="$IMG",format=raw \
+    -device usb-storage,drive=stick,removable=on \
     -netdev user,id=n0 -device e1000,netdev=n0

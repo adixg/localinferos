@@ -1,5 +1,5 @@
 // Model downloads through llama-server's router, which fetches GGUF files from
-// Hugging Face into $LLAMA_CACHE (/data/models on the ISO). Once a download
+// Hugging Face into $LLAMA_CACHE (/data/hf-cache on the USB stick). Once a download
 // finishes, the router lists the model and loads it on first use.
 
 use std::{

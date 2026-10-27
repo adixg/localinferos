@@ -1,88 +1,44 @@
 # LocalInferOS
 
-A minimal Ratatui TUI for chatting with local GGUF models through llama.cpp's router, with switching between models. No persistent database, browser UI, or Python runtime.
-
-Busybox base OS that you can boot into using a usb stick. Currently meant for 16GB USB sticks.
-
-## Repo structure
+A minimal BusyBox-based OS that boots straight into a terminal chat app for local LLMs (llama.cpp, CPU only). It profiles your hardware, estimates tok/s for each model, and downloads models from Hugging Face. Boots from a 16 GB USB stick (UEFI, Secure Boot off).
 
 ```
-LocalInferOS/
-├── Cargo.toml
-├── Cargo.lock
-├── src/                 # Rust TUI
-├── vendor/
-│   └── llama.cpp/       # Git submodule
-├── iso/
-│   └── build.sh
-├── .gitmodules
-├── .gitignore
-└── README.md
+src/               Rust TUI (chat, profiling, downloads; starts llama-server)
+vendor/llama.cpp/  Git submodule
+iso/               build.sh (USB image), init (boot script), run-qemu.sh
 ```
 
-## 0. Clone
+## Build
 
 ```sh
-git clone --recursive https://github.com/adixg/localinferos
+git clone --recursive https://github.com/adixg/localinferos && cd localinferos
+sudo apt install -y build-essential cmake ninja-build pkg-config libssl-dev busybox-static cpio \
+  zstd grub-efi-amd64-bin mtools qemu-system-x86 ovmf
+
+# llama.cpp, CPU only, portable to any AVX2 CPU
+cmake -S vendor/llama.cpp -B build/llama-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+  -DGGML_CUDA=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON
+cmake --build build/llama-cpu --target llama-server llama-bench -j 8
+
+# Bundled default model
+mkdir -p models && curl -L -o models/Qwen3-1.7B-Q4_K_M.gguf \
+  https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf
+
+iso/build.sh     # -> dist/LocalInferOS-v0.1.img, 14 GiB (asks for sudo once)
+iso/run-qemu.sh  # boot it in QEMU as a USB stick; RAM=8G CPUS=8 to override
 ```
 
-If you cloned without `--recursive`, run `git submodule update --init`.
+Flash the image with balenaEtcher, Rufus (DD mode) or `dd`. QEMU needs KVM access: `sudo usermod -aG kvm $USER`, then restart WSL (`wsl --shutdown`).
 
-## 1. Start the model router
+## Commands
 
-Build llama.cpp in `vendor/llama.cpp` (e.g. with CUDA into `build-cuda/`), then from the repo root:
+| Command | |
+|---|---|
+| `/profile` | Benchmark this machine, estimate tok/s per model (runs on first boot) |
+| `/download N` | Download model N from the profile table (`N force` if it may not fit in RAM) |
+| `/cancel` | Stop the download (`/download` again resumes) |
+| `/delete N`, `/storage` | Delete a downloaded model, show disk usage |
+| `/models`, `/use N` | List models, switch model (clears chat) |
+| `/clear`, `/help` | Reset chat, list commands |
 
-```sh
-vendor/llama.cpp/build-cuda/bin/llama-server \
-  --models-dir ./models \
-  --models-max 1 \
-  --no-webui \
-  -ngl 99 -c 4096 \
-  --host 127.0.0.1 --port 8080
-```
-
-Put `.gguf` files in `./models/` (ignored by git). `--models-max 1` prevents multiple models from being kept loaded at the same time. The router may create a child inference process for the active model.
-
-Confirm the router reports models:
-
-```sh
-curl -s http://127.0.0.1:8080/v1/models | jq -r '.data[].id'
-```
-
-If the request fails, check `vendor/llama.cpp/build-cuda/bin/llama-server --help` for router support; update the submodule and rebuild if needed.
-
-## 2. Run the TUI
-
-From the repo root:
-
-```sh
-cargo run --release
-```
-
-The TUI automatically queries `/v1/models` on startup and chooses the first discovered model.
-
-Commands typed into the chat input:
-
-- `/profile` — benchmark this machine and estimate tok/s for each catalog model (runs automatically on first start; saved to `/data/config/profile.json`)
-- `/models` — refresh and list discovered models
-- `/use 1` — choose model number 1, clears in-memory context if switching
-- `/use <exact-model-id>` — alternatively choose using the model id
-- `/clear` — reset chat
-- `/help` — show commands
-- ↑/↓ scroll one line, PgUp/PgDn scroll 10 lines, End jump to latest
-- Ctrl+Q — quit
-
-No model downloads, login, or chat persistence yet. These can be added later without changing the ISO design.
-
-## Updating llama.cpp
-
-```sh
-cd vendor/llama.cpp && git pull && cd ../..
-git add vendor/llama.cpp && git commit -m "Update llama.cpp"
-```
-
-## Minimality
-
-`reqwest` TLS features are disabled: the TUI only talks to HTTP on `127.0.0.1`. Future Hugging Face downloads will require enabling TLS in the downloader (or reusing llama.cpp's own downloader). This is a feature choice, not a promise of a single statically linked executable.
-
-The ISO is not built yet (`iso/build.sh` is a placeholder). The app and API work on WSL; the final ISO will still need a target-compatible binary and NVIDIA drivers.
+↑/↓, PgUp/PgDn and End scroll; Ctrl+Q quits. `localinferos --profile` prints the profile without the TUI.

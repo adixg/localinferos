@@ -1,6 +1,6 @@
 // Disk usage of the data partition and of downloaded models.
 //
-// llama-server's router downloads into $LLAMA_CACHE (/data/models on the ISO)
+// llama-server's router downloads into $LLAMA_CACHE (/data/hf-cache on the USB stick)
 // using the Hugging Face cache layout: one models--<org>--<repo> folder per repo.
 
 use std::{
@@ -12,7 +12,7 @@ use std::{
 use crate::profile::CatalogModel;
 
 pub fn models_dir() -> PathBuf {
-    PathBuf::from(std::env::var("LLAMA_CACHE").unwrap_or_else(|_| "/data/models".to_owned()))
+    PathBuf::from(std::env::var("LLAMA_CACHE").unwrap_or_else(|_| "/data/hf-cache".to_owned()))
 }
 
 /// (total, free) bytes on the filesystem that holds the models folder.

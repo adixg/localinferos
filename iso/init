@@ -4,114 +4,52 @@ export PATH=/bin:/usr/bin:/sbin
 export HOME=/root
 export TERM=linux
 
+# 1. Essential kernel filesystems
 mount -t devtmpfs devtmpfs /dev
-mkdir -p /dev/pts /dev/shm /proc /sys /tmp /run
-
+mkdir -p /dev/pts /dev/shm
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /tmp
 
-mkdir -p /mnt/iso
+# 2. Storage drivers (uas loads usb-storage itself)
+modprobe xhci-pci
+modprobe ahci
+modprobe uas
 
-echo "Loading ISO9660 driver..."
+# 3. Mount LIO_DATA. USB sticks take a few seconds to appear after their
+# driver loads, so retry for up to 10 seconds.
+echo "Looking for LIO_DATA..."
+i=0
+until DATA=$(findfs LABEL=LIO_DATA 2>/dev/null); do
+    i=$((i + 1))
+    if [ "$i" -ge 10 ]; then
+        echo "ERROR: no partition labelled LIO_DATA"
+        exec /bin/sh
+    fi
+    sleep 1
+done
 
-if ! /bin/busybox insmod /lib/modules/isofs.ko; then
-    echo "ERROR: Could not load ISO9660 driver"
+if ! mount -t ext4 "$DATA" /data; then
+    echo "ERROR: could not mount $DATA"
     exec /bin/sh
 fi
+mkdir -p /data/models /data/config /data/hf-cache
 
-if ! mount -t iso9660 -o ro /dev/sr0 /mnt/iso; then
-    echo "ERROR: Could not mount LocalInferOS ISO"
-    exec /bin/sh
-fi
-
-echo "Loading SATA drivers..."
-
-insmod /lib/modules/libahci.ko
-insmod /lib/modules/ahci.ko
-
-sleep 2
-
-# Mount persistent model storage
-echo "Mounting persistent storage..."
-
-mkdir -p /data
-
-if ! mount -t ext4 -o rw /dev/sdb /data; then
-    echo "ERROR: Cannot mount persistent storage"
-    exec /bin/sh
-fi
-
-mkdir -p /data/models /data/benchmarks /data/memory /data/config
-
-
-echo "Detected storage devices:"
-ls /sys/block
-
-# Load VirtualBox Ethernet driver
-echo "Loading Ethernet driver..."
-insmod /lib/modules/e1000.ko
-
-ip link
-
-ip link set eth0 up
-udhcpc -i eth0 -s /etc/udhcpc.script -n -q
-
+# 4. Network, for model downloads. Everything else works without it.
+modprobe e1000
 ip link set lo up
+ip link set eth0 up 2>/dev/null && udhcpc -i eth0 -s /etc/udhcpc.script -n -q
 
-clear
-echo "LocalInferOS booting..."
-
-
-# Start CPU inference backend in router mode: serves the bundled model from
-# the ISO plus any model downloaded from Hugging Face into /data/models.
-export LLAMA_CACHE=/data/models
+# 5. Rust TUI. It starts llama-server itself; these are for the server.
+export LLAMA_CACHE=/data/hf-cache
 # OpenSSL looks for CA certificates under /usr/lib/ssl, which the image lacks
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
-/usr/bin/llama-server \
-    --models-dir /mnt/iso/models \
-    --models-max 1 \
-    --host 127.0.0.1 \
-    --port 8080 \
-    --no-webui \
-    -c 1024 \
-    -ngl 0 \
-    > /tmp/llama.log 2>&1 &
-
-# Wait for inference backend
-echo "Loading model..."
-
-i=0
-ready=0
-
-while [ "$i" -lt 300 ]; do
-    if wget -q -T 2 -O /dev/null \
-        http://127.0.0.1:8080/health 2>/dev/null; then
-        ready=1
-        break
-    fi
-
-    sleep 1
-    i=$((i + 1))
-done
-
-if [ "$ready" -ne 1 ]; then
-    echo "ERROR: Model failed to become ready"
-    echo "=== llama-server logs ==="
-    tail -n 50 /tmp/llama.log
-    exec /bin/sh
-fi
-
-echo "Model ready!"
-
-# Launch terminal interface
+clear
+# init is PID 1 and must never exit, so restart the TUI if it quits
 while true; do
-     /usr/bin/localinferos \
-        < /dev/tty1 > /dev/tty1 2>&1
-
-    echo "LocalInferOS exited."
-    echo "Press Enter to restart."
+    /usr/bin/localinferos < /dev/tty1 > /dev/tty1 2>&1
+    echo "LocalInferOS exited. Press Enter to restart."
     read -r _
 done

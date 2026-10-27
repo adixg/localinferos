@@ -1,6 +1,8 @@
 use std::{
     error::Error,
+    fs::File,
     io::{BufRead, BufReader},
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
@@ -671,5 +673,63 @@ fn main() -> std::io::Result<()> {
         }
         return Ok(());
     }
-    ratatui::run(run)
+    let mut server = start_server();
+    let result = ratatui::run(run);
+    // Model processes started by the router exit when it does.
+    if let Some(child) = server.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+
+const HEALTH_URL: &str = "http://127.0.0.1:8080/health";
+
+fn server_up() -> bool {
+    reqwest::blocking::get(HEALTH_URL).is_ok_and(|r| r.status().is_success())
+}
+
+/// Starts llama-server in router mode and waits until it answers. Does nothing
+/// if a server is already running, e.g. during development on WSL.
+fn start_server() -> Option<Child> {
+    if server_up() {
+        return None;
+    }
+    let bin = std::env::var("LOCALINFEROS_SERVER").unwrap_or_else(|_| "llama-server".to_owned());
+    let models = std::env::var("LOCALINFEROS_MODELS").unwrap_or_else(|_| "/data/models".to_owned());
+
+    let mut cmd = Command::new(&bin);
+    cmd.args(["--models-dir", &models, "--models-max", "1", "--no-webui"])
+        .args(["--host", "127.0.0.1", "--port", "8080", "-c", "4096", "-ngl", "0"]);
+    if let Some(p) = profile::load().filter(|p| p.best_threads > 0) {
+        cmd.args(["-t", &p.best_threads.to_string()]);
+    }
+    // Server output would draw over the TUI, so it goes to a log file.
+    match File::create("/tmp/llama-server.log") {
+        Ok(log) => {
+            if let Ok(copy) = log.try_clone() {
+                cmd.stdout(copy);
+            }
+            cmd.stderr(log);
+        }
+        Err(_) => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
+
+    println!("Starting llama-server...");
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("Could not start {bin}: {err}");
+            return None;
+        }
+    };
+    for _ in 0..60 {
+        if server_up() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Some(child)
 }

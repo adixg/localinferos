@@ -188,7 +188,7 @@ fn bench_once(bench: &str, model: &str, threads: usize) -> Result<(f64, f64), St
 /// stopping at the first count that is slower than the best so far.
 pub fn run() -> Result<Profile, String> {
     let bench = env_or("LLAMA_BENCH", "llama-bench");
-    let model = env_or("LOCALINFEROS_PROFILE_MODEL", "/mnt/iso/models/default/Qwen3-1.7B-Q4_K_M.gguf");
+    let model = env_or("LOCALINFEROS_PROFILE_MODEL", "/data/models/default/Qwen3-1.7B-Q4_K_M.gguf");
     let cpu_threads = std::thread::available_parallelism().map_or(1, |n| n.get());
 
     let (mut best_threads, mut tokens_per_sec, mut model_size) = (0, 0.0, 0.0);
