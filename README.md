@@ -2,6 +2,8 @@
 
 A minimal BusyBox-based OS that boots straight into a terminal chat app for local LLMs (llama.cpp, CPU only). It profiles your hardware, estimates tok/s for each model, and downloads models from Hugging Face. Boots from a 16 GB USB stick (UEFI, Secure Boot off).
 
+Needs an x86-64 CPU with AVX2 (~2013 or newer). Downloads need wired Ethernet or Android USB tethering (no Wi-Fi yet).
+
 | Booting | Profiling and chat |
 |---|---|
 | ![Boot screen](docs/images/boot.png) | ![Profile table and chat in the TUI](docs/images/tui.png) |
@@ -13,6 +15,8 @@ iso/               build.sh (USB image), init (boot script), run-qemu.sh
 ```
 
 ## Build
+
+On Ubuntu 24.04 (WSL works): the image uses the build machine's Ubuntu kernel and libraries. Also needs [Rust](https://rustup.rs).
 
 ```sh
 git clone --recursive https://github.com/adixg/localinferos && cd localinferos
@@ -32,7 +36,7 @@ iso/build.sh     # -> dist/LocalInferOS-v0.1.img, 14 GiB (asks for sudo once)
 iso/run-qemu.sh  # boot it in QEMU as a USB stick; RAM=8G CPUS=8 to override
 ```
 
-Flash the image with balenaEtcher, Rufus (DD mode) or `dd`. QEMU needs KVM access: `sudo usermod -aG kvm $USER`, then restart WSL (`wsl --shutdown`).
+Flash the image with balenaEtcher, Rufus (DD mode) or `dd`. If Windows then asks to format the drive, click Cancel. QEMU needs KVM access: `sudo usermod -aG kvm $USER`, then restart WSL (`wsl --shutdown`).
 
 ## Commands
 
@@ -47,4 +51,4 @@ Flash the image with balenaEtcher, Rufus (DD mode) or `dd`. QEMU needs KVM acces
 
 Chats are saved to the stick (`/data/history`) and the last one is restored on boot. The profile is per machine: moving the stick to another computer profiles it again.
 
-↑/↓, PgUp/PgDn and End scroll; Ctrl+Q shuts down (just quits outside the OS), Ctrl+C restarts the TUI. `localinferos --profile` prints the profile without the TUI.
+↑/↓, PgUp/PgDn and End scroll; Ctrl+Q shuts down (just quits outside the OS), Ctrl+C exits the TUI (Enter restarts it). `localinferos --profile` prints the profile without the TUI.
